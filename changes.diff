@@ -1,0 +1,2010 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 7078ec2..e0486e8 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -3,11 +3,26 @@ apply plugin: "com.facebook.react"
+ 
+ import com.android.build.OutputFile
+ 
++def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
++def expoDebuggableVariants = ['debug']
++// Override `debuggableVariants` for expo-updates debugging
++if (System.getenv('EX_UPDATES_NATIVE_DEBUG') == "1") {
++  react {
++    expoDebuggableVariants = []
++  }
++}
++
++
+ /**
+  * This is the configuration block to customize your React Native Android app.
+  * By default you don't need to apply any configuration, just uncomment the lines you need.
+  */
+ react {
++    entryFile = file(["node", "-e", "require('expo/scripts/resolveAppEntry')", projectRoot, "android", "absolute"].execute(null, rootDir).text.trim())
++    reactNativeDir = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
++    hermesCommand = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsolutePath() + "/sdks/hermesc/%OS-BIN%/hermesc"
++    debuggableVariants = expoDebuggableVariants
++
+     /* Folders */
+     //   The root of your project, i.e. where "package.json" lives. Default is '..'
+     // root = file("../")
+@@ -52,6 +67,11 @@ react {
+     // hermesFlags = ["-O", "-output-source-map"]
+ }
+ 
++// Override `hermesEnabled` by `expo.jsEngine`
++ext {
++  hermesEnabled = (findProperty('expo.jsEngine') ?: "hermes") == "hermes"
++}
++
+ /**
+  * Set this to true to create four separate APKs instead of one,
+  * one for each native architecture. This is useful if you don't
+@@ -63,7 +83,7 @@ def enableSeparateBuildPerCPUArchitecture = false
+ /**
+  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
+  */
+-def enableProguardInReleaseBuilds = false
++def enableProguardInReleaseBuilds = (findProperty('android.enableProguardInReleaseBuilds') ?: false).toBoolean()
+ 
+ /**
+  * The preferred build flavor of JavaScriptCore (JSC)
+@@ -126,6 +146,7 @@ android {
+             // Caution! In production, you need to generate your own keystore file.
+             // see https://reactnative.dev/docs/signed-apk-android.
+             signingConfig signingConfigs.debug
++            shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
+             minifyEnabled enableProguardInReleaseBuilds
+             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+         }
+@@ -148,18 +169,63 @@ android {
+     }
+ }
+ 
++// Apply static values from `gradle.properties` to the `android.packagingOptions`
++// Accepts values in comma delimited lists, example:
++// android.packagingOptions.pickFirsts=/LICENSE,**/picasa.ini
++["pickFirsts", "excludes", "merges", "doNotStrip"].each { prop ->
++    // Split option: 'foo,bar' -> ['foo', 'bar']
++    def options = (findProperty("android.packagingOptions.$prop") ?: "").split(",");
++    // Trim all elements in place.
++    for (i in 0..<options.size()) options[i] = options[i].trim();
++    // `[] - ""` is essentially `[""].filter(Boolean)` removing all empty strings.
++    options -= ""
++
++    if (options.length > 0) {
++        println "android.packagingOptions.$prop += $options ($options.length)"
++        // Ex: android.packagingOptions.pickFirsts += '**/SCCS/**'
++        options.each {
++            android.packagingOptions[prop] += it
++        }
++    }
++}
++
+ dependencies {
+     // The version of react-native is set by the React Native Gradle Plugin
+     implementation("com.facebook.react:react-android")
+ 
++    def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
++    def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";
++    def isWebpAnimatedEnabled = (findProperty('expo.webp.animated') ?: "") == "true";
++    def frescoVersion = rootProject.ext.frescoVersion
++
++    // If your app supports Android versions before Ice Cream Sandwich (API level 14)
++    if (isGifEnabled || isWebpEnabled) {
++        implementation("com.facebook.fresco:fresco:${frescoVersion}")
++        implementation("com.facebook.fresco:imagepipeline-okhttp3:${frescoVersion}")
++    }
++
++    if (isGifEnabled) {
++        // For animated gif support
++        implementation("com.facebook.fresco:animated-gif:${frescoVersion}")
++    }
++
++    if (isWebpEnabled) {
++        // For webp support
++        implementation("com.facebook.fresco:webpsupport:${frescoVersion}")
++        if (isWebpAnimatedEnabled) {
++            // Animated webp support
++            implementation("com.facebook.fresco:animated-webp:${frescoVersion}")
++        }
++    }
++
+     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.0.0")
+ 
+     debugImplementation("com.facebook.flipper:flipper:${FLIPPER_VERSION}")
+     debugImplementation("com.facebook.flipper:flipper-network-plugin:${FLIPPER_VERSION}") {
+         exclude group:'com.squareup.okhttp3', module:'okhttp'
+     }
+-
+     debugImplementation("com.facebook.flipper:flipper-fresco-plugin:${FLIPPER_VERSION}")
++
+     if (hermesEnabled.toBoolean()) {
+         implementation("com.facebook.react:hermes-android")
+     } else {
+@@ -167,4 +233,5 @@ dependencies {
+     }
+ }
+ 
+-apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)
++apply from: new File(["node", "--print", "require.resolve('@react-native-community/cli-platform-android/package.json')"].execute(null, rootDir).text.trim(), "../native_modules.gradle");
++applyNativeModulesAppBuildGradle(project)
+diff --git a/android/app/proguard-rules.pro b/android/app/proguard-rules.pro
+index 11b0257..551eb41 100644
+--- a/android/app/proguard-rules.pro
++++ b/android/app/proguard-rules.pro
+@@ -7,4 +7,8 @@
+ # For more details, see
+ #   http://developer.android.com/guide/developing/tools/proguard.html
+ 
++# react-native-reanimated
++-keep class com.swmansion.reanimated.** { *; }
++-keep class com.facebook.react.turbomodule.** { *; }
++
+ # Add any project specific keep options here:
+diff --git a/android/app/src/debug/AndroidManifest.xml b/android/app/src/debug/AndroidManifest.xml
+index 4b185bc..99e38fc 100644
+--- a/android/app/src/debug/AndroidManifest.xml
++++ b/android/app/src/debug/AndroidManifest.xml
+@@ -1,13 +1,7 @@
+-<?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     xmlns:tools="http://schemas.android.com/tools">
+ 
+     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+ 
+-    <application
+-        android:usesCleartextTraffic="true"
+-        tools:targetApi="28"
+-        tools:ignore="GoogleAppIndexingWarning">
+-        <activity android:name="com.facebook.react.devsupport.DevSettingsActivity" android:exported="false" />
+-    </application>
++    <application android:usesCleartextTraffic="true" tools:targetApi="28" tools:ignore="GoogleAppIndexingWarning" />
+ </manifest>
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 52ba808..2f79fa4 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -1,14 +1,23 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.cleanproject">
+   <uses-permission android:name="android.permission.INTERNET"/>
+   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
++  <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
++  <uses-permission android:name="android.permission.VIBRATE"/>
+   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+-  <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme">
++  <queries>
++    <intent>
++      <action android:name="android.intent.action.VIEW"/>
++      <category android:name="android.intent.category.BROWSABLE"/>
++      <data android:scheme="https"/>
++    </intent>
++  </queries>
++  <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme" android:usesCleartextTraffic="true">
+     <meta-data android:name="expo.modules.updates.ENABLED" android:value="true"/>
+     <meta-data android:name="expo.modules.updates.EXPO_SDK_VERSION" android:value="48.0.0"/>
+     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
+     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
+     <meta-data android:name="expo.modules.updates.EXPO_UPDATE_URL" android:value="https://exp.host/@tmisiukiewicz/cleanproject"/>
+-    <activity android:name=".MainActivity" android:label="@string/app_name" android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:exported="true">
++    <activity android:name=".MainActivity" android:label="@string/app_name" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true">
+       <intent-filter>
+         <action android:name="android.intent.action.MAIN"/>
+         <category android:name="android.intent.category.LAUNCHER"/>
+@@ -20,5 +29,6 @@
+         <data android:scheme="com.cleanproject"/>
+       </intent-filter>
+     </activity>
++    <activity android:name="com.facebook.react.devsupport.DevSettingsActivity" android:exported="false"/>
+   </application>
+ </manifest>
+\ No newline at end of file
+diff --git a/android/app/src/main/java/com/cleanproject/MainActivity.java b/android/app/src/main/java/com/cleanproject/MainActivity.java
+index cdc901f..559db51 100644
+--- a/android/app/src/main/java/com/cleanproject/MainActivity.java
++++ b/android/app/src/main/java/com/cleanproject/MainActivity.java
+@@ -1,19 +1,32 @@
+ package com.cleanproject;
+ 
++import android.os.Build;
++import android.os.Bundle;
++
+ import com.facebook.react.ReactActivity;
+ import com.facebook.react.ReactActivityDelegate;
+ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;
+ import com.facebook.react.defaults.DefaultReactActivityDelegate;
+ 
++import expo.modules.ReactActivityDelegateWrapper;
++
+ public class MainActivity extends ReactActivity {
++  @Override
++  protected void onCreate(Bundle savedInstanceState) {
++    // Set the theme to AppTheme BEFORE onCreate to support 
++    // coloring the background, status bar, and navigation bar.
++    // This is required for expo-splash-screen.
++    setTheme(R.style.AppTheme);
++    super.onCreate(null);
++  }
+ 
+   /**
+-   * Returns the name of the main component registered from JavaScript. This is used to schedule
+-   * rendering of the component.
++   * Returns the name of the main component registered from JavaScript.
++   * This is used to schedule rendering of the component.
+    */
+   @Override
+   protected String getMainComponentName() {
+-    return "CleanProject";
++    return "main";
+   }
+ 
+   /**
+@@ -23,13 +36,33 @@ public class MainActivity extends ReactActivity {
+    */
+   @Override
+   protected ReactActivityDelegate createReactActivityDelegate() {
+-    return new DefaultReactActivityDelegate(
++    return new ReactActivityDelegateWrapper(this, BuildConfig.IS_NEW_ARCHITECTURE_ENABLED, new DefaultReactActivityDelegate(
+         this,
+         getMainComponentName(),
+         // If you opted-in for the New Architecture, we enable the Fabric Renderer.
+         DefaultNewArchitectureEntryPoint.getFabricEnabled(), // fabricEnabled
+         // If you opted-in for the New Architecture, we enable Concurrent React (i.e. React 18).
+         DefaultNewArchitectureEntryPoint.getConcurrentReactEnabled() // concurrentRootEnabled
+-        );
++        ));
++  }
++
++  /**
++   * Align the back button behavior with Android S
++   * where moving root activities to background instead of finishing activities.
++   * @see <a href="https://developer.android.com/reference/android/app/Activity#onBackPressed()">onBackPressed</a>
++   */
++  @Override
++  public void invokeDefaultOnBackPressed() {
++    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
++      if (!moveTaskToBack(false)) {
++        // For non-root activities, use the default implementation to finish them.
++        super.invokeDefaultOnBackPressed();
++      }
++      return;
++    }
++
++    // Use the default back button implementation on Android S
++    // because it's doing more than {@link Activity#moveTaskToBack} in fact.
++    super.invokeDefaultOnBackPressed();
+   }
+ }
+diff --git a/android/app/src/main/java/com/cleanproject/MainApplication.java b/android/app/src/main/java/com/cleanproject/MainApplication.java
+index 877bc63..3689ef3 100644
+--- a/android/app/src/main/java/com/cleanproject/MainApplication.java
++++ b/android/app/src/main/java/com/cleanproject/MainApplication.java
+@@ -1,6 +1,9 @@
+ package com.cleanproject;
+ 
+ import android.app.Application;
++import android.content.res.Configuration;
++import androidx.annotation.NonNull;
++
+ import com.facebook.react.PackageList;
+ import com.facebook.react.ReactApplication;
+ import com.facebook.react.ReactNativeHost;
+@@ -8,41 +11,45 @@ import com.facebook.react.ReactPackage;
+ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;
+ import com.facebook.react.defaults.DefaultReactNativeHost;
+ import com.facebook.soloader.SoLoader;
++
++import expo.modules.ApplicationLifecycleDispatcher;
++import expo.modules.ReactNativeHostWrapper;
++
+ import java.util.List;
+ 
+ public class MainApplication extends Application implements ReactApplication {
+ 
+   private final ReactNativeHost mReactNativeHost =
+-      new DefaultReactNativeHost(this) {
+-        @Override
+-        public boolean getUseDeveloperSupport() {
+-          return BuildConfig.DEBUG;
+-        }
+-
+-        @Override
+-        protected List<ReactPackage> getPackages() {
+-          @SuppressWarnings("UnnecessaryLocalVariable")
+-          List<ReactPackage> packages = new PackageList(this).getPackages();
+-          // Packages that cannot be autolinked yet can be added manually here, for example:
+-          // packages.add(new MyReactNativePackage());
+-          return packages;
+-        }
+-
+-        @Override
+-        protected String getJSMainModuleName() {
+-          return "index";
+-        }
+-
+-        @Override
+-        protected boolean isNewArchEnabled() {
+-          return BuildConfig.IS_NEW_ARCHITECTURE_ENABLED;
+-        }
+-
+-        @Override
+-        protected Boolean isHermesEnabled() {
+-          return BuildConfig.IS_HERMES_ENABLED;
+-        }
+-      };
++    new ReactNativeHostWrapper(this, new DefaultReactNativeHost(this) {
++      @Override
++      public boolean getUseDeveloperSupport() {
++        return BuildConfig.DEBUG;
++      }
++
++      @Override
++      protected List<ReactPackage> getPackages() {
++        @SuppressWarnings("UnnecessaryLocalVariable")
++        List<ReactPackage> packages = new PackageList(this).getPackages();
++        // Packages that cannot be autolinked yet can be added manually here, for example:
++        // packages.add(new MyReactNativePackage());
++        return packages;
++      }
++
++      @Override
++      protected String getJSMainModuleName() {
++        return "index";
++      }
++
++      @Override
++      protected boolean isNewArchEnabled() {
++        return BuildConfig.IS_NEW_ARCHITECTURE_ENABLED;
++      }
++
++      @Override
++      protected Boolean isHermesEnabled() {
++        return BuildConfig.IS_HERMES_ENABLED;
++      }
++  });
+ 
+   @Override
+   public ReactNativeHost getReactNativeHost() {
+@@ -58,5 +65,12 @@ public class MainApplication extends Application implements ReactApplication {
+       DefaultNewArchitectureEntryPoint.load();
+     }
+     ReactNativeFlipper.initializeFlipper(this, getReactNativeHost().getReactInstanceManager());
++    ApplicationLifecycleDispatcher.onApplicationCreate(this);
++  }
++
++  @Override
++  public void onConfigurationChanged(@NonNull Configuration newConfig) {
++    super.onConfigurationChanged(newConfig);
++    ApplicationLifecycleDispatcher.onConfigurationChanged(this, newConfig);
+   }
+ }
+diff --git a/android/app/src/main/res/values/styles.xml b/android/app/src/main/res/values/styles.xml
+index fda929e..f03e23f 100644
+--- a/android/app/src/main/res/values/styles.xml
++++ b/android/app/src/main/res/values/styles.xml
+@@ -1,11 +1,16 @@
+ <resources xmlns:tools="http://schemas.android.com/tools">
+-  <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+-    <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+-  </style>
+   <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
++    <item name="android:textColor">@android:color/black</item>
++    <item name="android:editTextStyle">@style/ResetEditText</item>
++    <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+     <item name="colorPrimary">@color/colorPrimary</item>
+     <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+   </style>
++  <style name="ResetEditText" parent="@android:style/Widget.EditText">
++    <item name="android:padding">0dp</item>
++    <item name="android:textColorHint">#c8c8c8</item>
++    <item name="android:textColor">@android:color/black</item>
++  </style>
+   <style name="Theme.App.SplashScreen" parent="AppTheme">
+     <item name="android:windowBackground">@drawable/splashscreen</item>
+   </style>
+diff --git a/android/build.gradle b/android/build.gradle
+index 67d887b..e5fda82 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -2,10 +2,14 @@
+ 
+ buildscript {
+     ext {
+-        buildToolsVersion = "33.0.0"
+-        minSdkVersion = 21
+-        compileSdkVersion = 33
+-        targetSdkVersion = 33
++        buildToolsVersion = findProperty('android.buildToolsVersion') ?: '33.0.0'
++        minSdkVersion = Integer.parseInt(findProperty('android.minSdkVersion') ?: '21')
++        compileSdkVersion = Integer.parseInt(findProperty('android.compileSdkVersion') ?: '33')
++        targetSdkVersion = Integer.parseInt(findProperty('android.targetSdkVersion') ?: '33')
++        if (findProperty('android.kotlinVersion')) {
++            kotlinVersion = findProperty('android.kotlinVersion')
++        }
++        frescoVersion = findProperty('expo.frescoVersion') ?: '2.5.0'
+ 
+         // We use NDK 23 which has both M1 support and is the side-by-side NDK version from AGP.
+         ndkVersion = "23.1.7779620"
+@@ -15,7 +19,24 @@ buildscript {
+         mavenCentral()
+     }
+     dependencies {
+-        classpath("com.android.tools.build:gradle:7.3.1")
+-        classpath("com.facebook.react:react-native-gradle-plugin")
++        classpath('com.android.tools.build:gradle:7.4.1')
++        classpath('com.facebook.react:react-native-gradle-plugin')
++    }
++}
++
++allprojects {
++    repositories {
++        maven {
++            // All of React Native (JS, Obj-C sources, Android binaries) is installed from npm
++            url(new File(['node', '--print', "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim(), '../android'))
++        }
++        maven {
++            // Android JSC is installed from npm
++            url(new File(['node', '--print', "require.resolve('jsc-android/package.json')"].execute(null, rootDir).text.trim(), '../dist'))
++        }
++
++        google()
++        mavenCentral()
++        maven { url 'https://www.jitpack.io' }
+     }
+ }
+diff --git a/android/gradle.properties b/android/gradle.properties
+index 93ca98d..9911ac4 100644
+--- a/android/gradle.properties
++++ b/android/gradle.properties
+@@ -21,6 +21,7 @@ org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m
+ # Android operating system, and which are packaged with your app's APK
+ # https://developer.android.com/topic/libraries/support-library/androidx-rn
+ android.useAndroidX=true
++
+ # Automatically convert third-party libraries to use AndroidX
+ android.enableJetifier=true
+ 
+@@ -39,8 +40,14 @@ reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64
+ # are providing them.
+ newArchEnabled=false
+ 
+-# Use this property to enable or disable the Hermes JS engine.
+-# If set to false, you will be using JSC instead.
+-hermesEnabled=true
+-
+-expo.jsEngine=hermes
+\ No newline at end of file
++# The hosted JavaScript engine
++# Supported values: expo.jsEngine = "hermes" | "jsc"
++expo.jsEngine=hermes
++
++# Enable GIF support in React Native images (~200 B increase)
++expo.gif.enabled=true
++# Enable webp support in React Native images (~85 KB increase)
++expo.webp.enabled=true
++# Enable animated webp support (~3.4 MB increase)
++# Disabled by default because iOS doesn't support animated webp
++expo.webp.animated=false
+diff --git a/android/gradle/wrapper/gradle-wrapper.jar b/android/gradle/wrapper/gradle-wrapper.jar
+index 41d9927..249e583 100644
+Binary files a/android/gradle/wrapper/gradle-wrapper.jar and b/android/gradle/wrapper/gradle-wrapper.jar differ
+diff --git a/android/gradlew b/android/gradlew
+index 1b6c787..a69d9cb 100755
+--- a/android/gradlew
++++ b/android/gradlew
+@@ -205,6 +205,12 @@ set -- \
+         org.gradle.wrapper.GradleWrapperMain \
+         "$@"
+ 
++# Stop when "xargs" is not available.
++if ! command -v xargs >/dev/null 2>&1
++then
++    die "xargs is not available"
++fi
++
+ # Use "xargs" to parse quoted args.
+ #
+ # With -n1 it outputs one arg per line, with the quotes and backslashes removed.
+diff --git a/android/gradlew.bat b/android/gradlew.bat
+index ac1b06f..53a6b23 100644
+--- a/android/gradlew.bat
++++ b/android/gradlew.bat
+@@ -14,7 +14,7 @@
+ @rem limitations under the License.
+ @rem
+ 
+-@if "%DEBUG%" == "" @echo off
++@if "%DEBUG%"=="" @echo off
+ @rem ##########################################################################
+ @rem
+ @rem  Gradle startup script for Windows
+@@ -25,7 +25,7 @@
+ if "%OS%"=="Windows_NT" setlocal
+ 
+ set DIRNAME=%~dp0
+-if "%DIRNAME%" == "" set DIRNAME=.
++if "%DIRNAME%"=="" set DIRNAME=.
+ set APP_BASE_NAME=%~n0
+ set APP_HOME=%DIRNAME%
+ 
+@@ -40,7 +40,7 @@ if defined JAVA_HOME goto findJavaFromJavaHome
+ 
+ set JAVA_EXE=java.exe
+ %JAVA_EXE% -version >NUL 2>&1
+-if "%ERRORLEVEL%" == "0" goto execute
++if %ERRORLEVEL% equ 0 goto execute
+ 
+ echo.
+ echo ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+@@ -75,13 +75,15 @@ set CLASSPATH=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
+ 
+ :end
+ @rem End local scope for the variables with windows NT shell
+-if "%ERRORLEVEL%"=="0" goto mainEnd
++if %ERRORLEVEL% equ 0 goto mainEnd
+ 
+ :fail
+ rem Set variable GRADLE_EXIT_CONSOLE if you need the _script_ return code instead of
+ rem the _cmd.exe /c_ return code!
+-if  not "" == "%GRADLE_EXIT_CONSOLE%" exit 1
+-exit /b 1
++set EXIT_CODE=%ERRORLEVEL%
++if %EXIT_CODE% equ 0 set EXIT_CODE=1
++if not ""=="%GRADLE_EXIT_CONSOLE%" exit %EXIT_CODE%
++exit /b %EXIT_CODE%
+ 
+ :mainEnd
+ if "%OS%"=="Windows_NT" endlocal
+diff --git a/android/settings.gradle b/android/settings.gradle
+index 3816652..362708f 100644
+--- a/android/settings.gradle
++++ b/android/settings.gradle
+@@ -1,4 +1,10 @@
+ rootProject.name = 'CleanProject'
+-apply from: file("../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesSettingsGradle(settings)
++
++apply from: new File(["node", "--print", "require.resolve('expo/package.json')"].execute(null, rootDir).text.trim(), "../scripts/autolinking.gradle");
++useExpoModules()
++
++apply from: new File(["node", "--print", "require.resolve('@react-native-community/cli-platform-android/package.json')"].execute(null, rootDir).text.trim(), "../native_modules.gradle");
++applyNativeModulesSettingsGradle(settings)
++
+ include ':app'
+-includeBuild('../node_modules/react-native-gradle-plugin')
++includeBuild(new File(["node", "--print", "require.resolve('react-native-gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).getParentFile())
+diff --git a/ios/CleanProject.xcodeproj/project.pbxproj b/ios/CleanProject.xcodeproj/project.pbxproj
+index 698569d..ce6f169 100644
+--- a/ios/CleanProject.xcodeproj/project.pbxproj
++++ b/ios/CleanProject.xcodeproj/project.pbxproj
+@@ -3,100 +3,62 @@
+ 	archiveVersion = 1;
+ 	classes = {
+ 	};
+-	objectVersion = 54;
++	objectVersion = 46;
+ 	objects = {
+ 
+ /* Begin PBXBuildFile section */
+-		00E356F31AD99517003FC87E /* CleanProjectTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 00E356F21AD99517003FC87E /* CleanProjectTests.m */; };
+-		0C80B921A6F3F58F76C31292 /* libPods-CleanProject.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-CleanProject.a */; };
++		10C383D5CF8740F5BD6E37E0 /* noop-file.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A80A1517D9409E83C101A8 /* noop-file.swift */; };
+ 		13B07FBC1A68108700A75B9A /* AppDelegate.mm in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.mm */; };
+ 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+ 		13B07FC11A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
+-		7699B88040F8A987B510C191 /* libPods-CleanProject-CleanProjectTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 19F6CBCC0A4E27FBF8BF4A61 /* libPods-CleanProject-CleanProjectTests.a */; };
+-		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+-		D5488D7ACCEB4583A011A5CB /* noop-file.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EED8EC72A094155A1E8F618 /* noop-file.swift */; };
++		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
++		96905EF65AED1B983A6B3ABC /* libPods-CleanProject.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 58EEBF8E8E6FB1BC6CAF49B5 /* libPods-CleanProject.a */; };
++		B18059E884C0ABDD17F3DC3D /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */; };
++		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
+ /* End PBXBuildFile section */
+ 
+-/* Begin PBXContainerItemProxy section */
+-		00E356F41AD99517003FC87E /* PBXContainerItemProxy */ = {
+-			isa = PBXContainerItemProxy;
+-			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
+-			proxyType = 1;
+-			remoteGlobalIDString = 13B07F861A680F5B00A75B9A;
+-			remoteInfo = CleanProject;
+-		};
+-/* End PBXContainerItemProxy section */
+-
+ /* Begin PBXFileReference section */
+-		00E356EE1AD99517003FC87E /* CleanProjectTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CleanProjectTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+-		00E356F11AD99517003FC87E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+-		00E356F21AD99517003FC87E /* CleanProjectTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CleanProjectTests.m; sourceTree = "<group>"; };
++		008F07F21AC5B25A0029DE68 /* main.jsbundle */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = main.jsbundle; sourceTree = "<group>"; };
+ 		13B07F961A680F5B00A75B9A /* CleanProject.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CleanProject.app; sourceTree = BUILT_PRODUCTS_DIR; };
+ 		13B07FAF1A68108700A75B9A /* AppDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = AppDelegate.h; path = CleanProject/AppDelegate.h; sourceTree = "<group>"; };
+ 		13B07FB01A68108700A75B9A /* AppDelegate.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; name = AppDelegate.mm; path = CleanProject/AppDelegate.mm; sourceTree = "<group>"; };
+ 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = CleanProject/Images.xcassets; sourceTree = "<group>"; };
+ 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = CleanProject/Info.plist; sourceTree = "<group>"; };
+ 		13B07FB71A68108700A75B9A /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = main.m; path = CleanProject/main.m; sourceTree = "<group>"; };
+-		19F6CBCC0A4E27FBF8BF4A61 /* libPods-CleanProject-CleanProjectTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-CleanProject-CleanProjectTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+-		3B4392A12AC88292D35C810B /* Pods-CleanProject.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CleanProject.debug.xcconfig"; path = "Target Support Files/Pods-CleanProject/Pods-CleanProject.debug.xcconfig"; sourceTree = "<group>"; };
+-		5709B34CF0A7D63546082F79 /* Pods-CleanProject.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CleanProject.release.xcconfig"; path = "Target Support Files/Pods-CleanProject/Pods-CleanProject.release.xcconfig"; sourceTree = "<group>"; };
+-		5B7EB9410499542E8C5724F5 /* Pods-CleanProject-CleanProjectTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CleanProject-CleanProjectTests.debug.xcconfig"; path = "Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests.debug.xcconfig"; sourceTree = "<group>"; };
+-		5DCACB8F33CDC322A6C60F78 /* libPods-CleanProject.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-CleanProject.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+-		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = CleanProject/LaunchScreen.storyboard; sourceTree = "<group>"; };
+-		89C6BE57DB24E9ADA2F236DE /* Pods-CleanProject-CleanProjectTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CleanProject-CleanProjectTests.release.xcconfig"; path = "Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests.release.xcconfig"; sourceTree = "<group>"; };
++		58EEBF8E8E6FB1BC6CAF49B5 /* libPods-CleanProject.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-CleanProject.a"; sourceTree = BUILT_PRODUCTS_DIR; };
++		6C2E3173556A471DD304B334 /* Pods-CleanProject.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CleanProject.debug.xcconfig"; path = "Target Support Files/Pods-CleanProject/Pods-CleanProject.debug.xcconfig"; sourceTree = "<group>"; };
++		7A4D352CD337FB3A3BF06240 /* Pods-CleanProject.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CleanProject.release.xcconfig"; path = "Target Support Files/Pods-CleanProject/Pods-CleanProject.release.xcconfig"; sourceTree = "<group>"; };
++		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = CleanProject/SplashScreen.storyboard; sourceTree = "<group>"; };
++		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
++		E1A80A1517D9409E83C101A8 /* noop-file.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = "noop-file.swift"; path = "CleanProject/noop-file.swift"; sourceTree = "<group>"; };
+ 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+-		7EED8EC72A094155A1E8F618 /* noop-file.swift */ = {isa = PBXFileReference; name = "noop-file.swift"; path = "CleanProject/noop-file.swift"; sourceTree = "<group>"; fileEncoding = 4; lastKnownFileType = sourcecode.swift; explicitFileType = undefined; includeInIndex = 0; };
+-		76655BECB44E460DB3FEC572 /* SplashScreen.storyboard */ = {isa = PBXFileReference; name = "SplashScreen.storyboard"; path = "CleanProject/SplashScreen.storyboard"; sourceTree = "<group>"; fileEncoding = undefined; lastKnownFileType = unknown; explicitFileType = undefined; includeInIndex = 0; };
++		FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-CleanProject/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+ /* End PBXFileReference section */
+ 
+ /* Begin PBXFrameworksBuildPhase section */
+-		00E356EB1AD99517003FC87E /* Frameworks */ = {
+-			isa = PBXFrameworksBuildPhase;
+-			buildActionMask = 2147483647;
+-			files = (
+-				7699B88040F8A987B510C191 /* libPods-CleanProject-CleanProjectTests.a in Frameworks */,
+-			);
+-			runOnlyForDeploymentPostprocessing = 0;
+-		};
+ 		13B07F8C1A680F5B00A75B9A /* Frameworks */ = {
+ 			isa = PBXFrameworksBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
+-				0C80B921A6F3F58F76C31292 /* libPods-CleanProject.a in Frameworks */,
++				96905EF65AED1B983A6B3ABC /* libPods-CleanProject.a in Frameworks */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+ /* End PBXFrameworksBuildPhase section */
+ 
+ /* Begin PBXGroup section */
+-		00E356EF1AD99517003FC87E /* CleanProjectTests */ = {
+-			isa = PBXGroup;
+-			children = (
+-				00E356F21AD99517003FC87E /* CleanProjectTests.m */,
+-				00E356F01AD99517003FC87E /* Supporting Files */,
+-			);
+-			path = CleanProjectTests;
+-			sourceTree = "<group>";
+-		};
+-		00E356F01AD99517003FC87E /* Supporting Files */ = {
+-			isa = PBXGroup;
+-			children = (
+-				00E356F11AD99517003FC87E /* Info.plist */,
+-			);
+-			name = "Supporting Files";
+-			sourceTree = "<group>";
+-		};
+ 		13B07FAE1A68108700A75B9A /* CleanProject */ = {
+ 			isa = PBXGroup;
+ 			children = (
++				BB2F792B24A3F905000567C9 /* Supporting */,
++				008F07F21AC5B25A0029DE68 /* main.jsbundle */,
+ 				13B07FAF1A68108700A75B9A /* AppDelegate.h */,
+ 				13B07FB01A68108700A75B9A /* AppDelegate.mm */,
+ 				13B07FB51A68108700A75B9A /* Images.xcassets */,
+ 				13B07FB61A68108700A75B9A /* Info.plist */,
+-				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
+ 				13B07FB71A68108700A75B9A /* main.m */,
+-				7EED8EC72A094155A1E8F618 /* noop-file.swift */,
+-				76655BECB44E460DB3FEC572 /* SplashScreen.storyboard */,
++				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
++				E1A80A1517D9409E83C101A8 /* noop-file.swift */,
+ 			);
+ 			name = CleanProject;
+ 			sourceTree = "<group>";
+@@ -105,8 +67,7 @@
+ 			isa = PBXGroup;
+ 			children = (
+ 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
+-				5DCACB8F33CDC322A6C60F78 /* libPods-CleanProject.a */,
+-				19F6CBCC0A4E27FBF8BF4A61 /* libPods-CleanProject-CleanProjectTests.a */,
++				58EEBF8E8E6FB1BC6CAF49B5 /* libPods-CleanProject.a */,
+ 			);
+ 			name = Frameworks;
+ 			sourceTree = "<group>";
+@@ -123,10 +84,10 @@
+ 			children = (
+ 				13B07FAE1A68108700A75B9A /* CleanProject */,
+ 				832341AE1AAA6A7D00B99B32 /* Libraries */,
+-				00E356EF1AD99517003FC87E /* CleanProjectTests */,
+ 				83CBBA001A601CBA00E9B192 /* Products */,
+ 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
+-				BBD78D7AC51CEA395F1C20DB /* Pods */,
++				D65327D7A22EEC0BE12398D9 /* Pods */,
++				D7E4C46ADA2E9064B798F356 /* ExpoModulesProviders */,
+ 			);
+ 			indentWidth = 2;
+ 			sourceTree = "<group>";
+@@ -137,58 +98,59 @@
+ 			isa = PBXGroup;
+ 			children = (
+ 				13B07F961A680F5B00A75B9A /* CleanProject.app */,
+-				00E356EE1AD99517003FC87E /* CleanProjectTests.xctest */,
+ 			);
+ 			name = Products;
+ 			sourceTree = "<group>";
+ 		};
+-		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
++		92DBD88DE9BF7D494EA9DA96 /* CleanProject */ = {
+ 			isa = PBXGroup;
+ 			children = (
+-				3B4392A12AC88292D35C810B /* Pods-CleanProject.debug.xcconfig */,
+-				5709B34CF0A7D63546082F79 /* Pods-CleanProject.release.xcconfig */,
+-				5B7EB9410499542E8C5724F5 /* Pods-CleanProject-CleanProjectTests.debug.xcconfig */,
+-				89C6BE57DB24E9ADA2F236DE /* Pods-CleanProject-CleanProjectTests.release.xcconfig */,
++				FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */,
+ 			);
+-			path = Pods;
++			name = CleanProject;
+ 			sourceTree = "<group>";
+ 		};
+-/* End PBXGroup section */
+-
+-/* Begin PBXNativeTarget section */
+-		00E356ED1AD99517003FC87E /* CleanProjectTests */ = {
+-			isa = PBXNativeTarget;
+-			buildConfigurationList = 00E357021AD99517003FC87E /* Build configuration list for PBXNativeTarget "CleanProjectTests" */;
+-			buildPhases = (
+-				A55EABD7B0C7F3A422A6CC61 /* [CP] Check Pods Manifest.lock */,
+-				00E356EA1AD99517003FC87E /* Sources */,
+-				00E356EB1AD99517003FC87E /* Frameworks */,
+-				00E356EC1AD99517003FC87E /* Resources */,
+-				C59DA0FBD6956966B86A3779 /* [CP] Embed Pods Frameworks */,
+-				F6A41C54EA430FDDC6A6ED99 /* [CP] Copy Pods Resources */,
++		BB2F792B24A3F905000567C9 /* Supporting */ = {
++			isa = PBXGroup;
++			children = (
++				BB2F792C24A3F905000567C9 /* Expo.plist */,
+ 			);
+-			buildRules = (
++			name = Supporting;
++			path = CleanProject/Supporting;
++			sourceTree = "<group>";
++		};
++		D65327D7A22EEC0BE12398D9 /* Pods */ = {
++			isa = PBXGroup;
++			children = (
++				6C2E3173556A471DD304B334 /* Pods-CleanProject.debug.xcconfig */,
++				7A4D352CD337FB3A3BF06240 /* Pods-CleanProject.release.xcconfig */,
+ 			);
+-			dependencies = (
+-				00E356F51AD99517003FC87E /* PBXTargetDependency */,
++			path = Pods;
++			sourceTree = "<group>";
++		};
++		D7E4C46ADA2E9064B798F356 /* ExpoModulesProviders */ = {
++			isa = PBXGroup;
++			children = (
++				92DBD88DE9BF7D494EA9DA96 /* CleanProject */,
+ 			);
+-			name = CleanProjectTests;
+-			productName = CleanProjectTests;
+-			productReference = 00E356EE1AD99517003FC87E /* CleanProjectTests.xctest */;
+-			productType = "com.apple.product-type.bundle.unit-test";
++			name = ExpoModulesProviders;
++			sourceTree = "<group>";
+ 		};
++/* End PBXGroup section */
++
++/* Begin PBXNativeTarget section */
+ 		13B07F861A680F5B00A75B9A /* CleanProject */ = {
+ 			isa = PBXNativeTarget;
+ 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "CleanProject" */;
+ 			buildPhases = (
+-				C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */,
++				08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */,
+ 				FD10A7F022414F080027D42C /* Start Packager */,
+ 				13B07F871A680F5B00A75B9A /* Sources */,
+ 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
+ 				13B07F8E1A680F5B00A75B9A /* Resources */,
+ 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
+-				00EEFC60759A1932668264C0 /* [CP] Embed Pods Frameworks */,
+-				E235C05ADACE081382539298 /* [CP] Copy Pods Resources */,
++				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
++				C06E99DA5C22EA92D7FFD134 /* [CP] Embed Pods Frameworks */,
+ 			);
+ 			buildRules = (
+ 			);
+@@ -205,19 +167,15 @@
+ 		83CBB9F71A601CBA00E9B192 /* Project object */ = {
+ 			isa = PBXProject;
+ 			attributes = {
+-				LastUpgradeCheck = 1210;
++				LastUpgradeCheck = 1130;
+ 				TargetAttributes = {
+-					00E356ED1AD99517003FC87E = {
+-						CreatedOnToolsVersion = 6.2;
+-						TestTargetID = 13B07F861A680F5B00A75B9A;
+-					};
+ 					13B07F861A680F5B00A75B9A = {
+-						LastSwiftMigration = 1120;
++						LastSwiftMigration = 1250;
+ 					};
+ 				};
+ 			};
+ 			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "CleanProject" */;
+-			compatibilityVersion = "Xcode 12.0";
++			compatibilityVersion = "Xcode 3.2";
+ 			developmentRegion = en;
+ 			hasScannedForEncodings = 0;
+ 			knownRegions = (
+@@ -230,26 +188,18 @@
+ 			projectRoot = "";
+ 			targets = (
+ 				13B07F861A680F5B00A75B9A /* CleanProject */,
+-				00E356ED1AD99517003FC87E /* CleanProjectTests */,
+ 			);
+ 		};
+ /* End PBXProject section */
+ 
+ /* Begin PBXResourcesBuildPhase section */
+-		00E356EC1AD99517003FC87E /* Resources */ = {
+-			isa = PBXResourcesBuildPhase;
+-			buildActionMask = 2147483647;
+-			files = (
+-			);
+-			runOnlyForDeploymentPostprocessing = 0;
+-		};
+ 		13B07F8E1A680F5B00A75B9A /* Resources */ = {
+ 			isa = PBXResourcesBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
+-				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
++				BB2F792D24A3F905000567C9 /* Expo.plist in Resources */,
+ 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
+-				3E165D602D254D7FAB341CD7 /* SplashScreen.storyboard in Resources */,
++				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+@@ -262,56 +212,15 @@
+ 			files = (
+ 			);
+ 			inputPaths = (
+-				"$(SRCROOT)/.xcode.env.local",
+-				"$(SRCROOT)/.xcode.env",
+ 			);
+ 			name = "Bundle React Native code and images";
+ 			outputPaths = (
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 			shellPath = /bin/sh;
+-			shellScript = "set -e\n\nWITH_ENVIRONMENT=\"../node_modules/react-native/scripts/xcode/with-environment.sh\"\nREACT_NATIVE_XCODE=\"../node_modules/react-native/scripts/react-native-xcode.sh\"\n\n/bin/sh -c \"$WITH_ENVIRONMENT $REACT_NATIVE_XCODE\"\n";
+-		};
+-		00EEFC60759A1932668264C0 /* [CP] Embed Pods Frameworks */ = {
+-			isa = PBXShellScriptBuildPhase;
+-			buildActionMask = 2147483647;
+-			files = (
+-			);
+-			inputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+-			);
+-			name = "[CP] Embed Pods Frameworks";
+-			outputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+-			);
+-			runOnlyForDeploymentPostprocessing = 0;
+-			shellPath = /bin/sh;
+-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-frameworks.sh\"\n";
+-			showEnvVarsInLog = 0;
+-		};
+-		A55EABD7B0C7F3A422A6CC61 /* [CP] Check Pods Manifest.lock */ = {
+-			isa = PBXShellScriptBuildPhase;
+-			buildActionMask = 2147483647;
+-			files = (
+-			);
+-			inputFileListPaths = (
+-			);
+-			inputPaths = (
+-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+-				"${PODS_ROOT}/Manifest.lock",
+-			);
+-			name = "[CP] Check Pods Manifest.lock";
+-			outputFileListPaths = (
+-			);
+-			outputPaths = (
+-				"$(DERIVED_FILE_DIR)/Pods-CleanProject-CleanProjectTests-checkManifestLockResult.txt",
+-			);
+-			runOnlyForDeploymentPostprocessing = 0;
+-			shellPath = /bin/sh;
+-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+-			showEnvVarsInLog = 0;
++			shellScript = "if [[ -f \"$PODS_ROOT/../.xcode.env\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env\"\nfi\nif [[ -f \"$PODS_ROOT/../.xcode.env.local\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env.local\"\nfi\n\n# The project root by default is one level up from the ios directory\nexport PROJECT_ROOT=\"$PROJECT_DIR\"/..\n\nif [[ \"$CONFIGURATION\" = *Debug* ]]; then\n  export SKIP_BUNDLING=1\nfi\nif [[ -z \"$ENTRY_FILE\" ]]; then\n  # Set the entry JS file using the bundler's entry resolution.\n  export ENTRY_FILE=\"$(\"$NODE_BINARY\" -e \"require('expo/scripts/resolveAppEntry')\" $PROJECT_ROOT ios relative | tail -n 1)\"\nfi\n\n`\"$NODE_BINARY\" --print \"require('path').dirname(require.resolve('react-native/package.json')) + '/scripts/react-native-xcode.sh'\"`\n\n";
+ 		};
+-		C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */ = {
++		08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */ = {
+ 			isa = PBXShellScriptBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
+@@ -333,55 +242,42 @@
+ 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+ 			showEnvVarsInLog = 0;
+ 		};
+-		C59DA0FBD6956966B86A3779 /* [CP] Embed Pods Frameworks */ = {
++		800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */ = {
+ 			isa = PBXShellScriptBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
+ 			);
+-			inputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+-			);
+-			name = "[CP] Embed Pods Frameworks";
+-			outputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+-			);
+-			runOnlyForDeploymentPostprocessing = 0;
+-			shellPath = /bin/sh;
+-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests-frameworks.sh\"\n";
+-			showEnvVarsInLog = 0;
+-		};
+-		E235C05ADACE081382539298 /* [CP] Copy Pods Resources */ = {
+-			isa = PBXShellScriptBuildPhase;
+-			buildActionMask = 2147483647;
+-			files = (
+-			);
+-			inputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-resources-${CONFIGURATION}-input-files.xcfilelist",
++			inputPaths = (
++				"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-resources.sh",
++				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/EXConstants.bundle",
++				"${PODS_CONFIGURATION_BUILD_DIR}/React-Core/AccessibilityResources.bundle",
+ 			);
+ 			name = "[CP] Copy Pods Resources";
+-			outputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-resources-${CONFIGURATION}-output-files.xcfilelist",
++			outputPaths = (
++				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXConstants.bundle",
++				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/AccessibilityResources.bundle",
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 			shellPath = /bin/sh;
+ 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-resources.sh\"\n";
+ 			showEnvVarsInLog = 0;
+ 		};
+-		F6A41C54EA430FDDC6A6ED99 /* [CP] Copy Pods Resources */ = {
++		C06E99DA5C22EA92D7FFD134 /* [CP] Embed Pods Frameworks */ = {
+ 			isa = PBXShellScriptBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
+ 			);
+-			inputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests-resources-${CONFIGURATION}-input-files.xcfilelist",
++			inputPaths = (
++				"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-frameworks.sh",
++				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
+ 			);
+-			name = "[CP] Copy Pods Resources";
+-			outputFileListPaths = (
+-				"${PODS_ROOT}/Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests-resources-${CONFIGURATION}-output-files.xcfilelist",
++			name = "[CP] Embed Pods Frameworks";
++			outputPaths = (
++				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 			shellPath = /bin/sh;
+-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CleanProject-CleanProjectTests/Pods-CleanProject-CleanProjectTests-resources.sh\"\n";
++			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CleanProject/Pods-CleanProject-frameworks.sh\"\n";
+ 			showEnvVarsInLog = 0;
+ 		};
+ 		FD10A7F022414F080027D42C /* Start Packager */ = {
+@@ -400,147 +296,81 @@
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 			shellPath = /bin/sh;
+-			shellScript = "export RCT_METRO_PORT=\"${RCT_METRO_PORT:=8081}\"\necho \"export RCT_METRO_PORT=${RCT_METRO_PORT}\" > \"${SRCROOT}/../node_modules/react-native/scripts/.packager.env\"\nif [ -z \"${RCT_NO_LAUNCH_PACKAGER+xxx}\" ] ; then\n  if nc -w 5 -z localhost ${RCT_METRO_PORT} ; then\n    if ! curl -s \"http://localhost:${RCT_METRO_PORT}/status\" | grep -q \"packager-status:running\" ; then\n      echo \"Port ${RCT_METRO_PORT} already in use, packager is either not running or not running correctly\"\n      exit 2\n    fi\n  else\n    open \"$SRCROOT/../node_modules/react-native/scripts/launchPackager.command\" || echo \"Can't start packager automatically\"\n  fi\nfi\n";
++			shellScript = "if [[ -f \"$PODS_ROOT/../.xcode.env\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env\"\nfi\nif [[ -f \"$PODS_ROOT/../.xcode.env.local\" ]]; then\n  source \"$PODS_ROOT/../.xcode.env.local\"\nfi\n\nexport RCT_METRO_PORT=\"${RCT_METRO_PORT:=8081}\"\necho \"export RCT_METRO_PORT=${RCT_METRO_PORT}\" > `$NODE_BINARY --print \"require('path').dirname(require.resolve('react-native/package.json')) + '/scripts/.packager.env'\"`\nif [ -z \"${RCT_NO_LAUNCH_PACKAGER+xxx}\" ] ; then\n  if nc -w 5 -z localhost ${RCT_METRO_PORT} ; then\n    if ! curl -s \"http://localhost:${RCT_METRO_PORT}/status\" | grep -q \"packager-status:running\" ; then\n      echo \"Port ${RCT_METRO_PORT} already in use, packager is either not running or not running correctly\"\n      exit 2\n    fi\n  else\n    open `$NODE_BINARY --print \"require('path').dirname(require.resolve('react-native/package.json')) + '/scripts/launchPackager.command'\"` || echo \"Can't start packager automatically\"\n  fi\nfi\n";
+ 			showEnvVarsInLog = 0;
+ 		};
+ /* End PBXShellScriptBuildPhase section */
+ 
+ /* Begin PBXSourcesBuildPhase section */
+-		00E356EA1AD99517003FC87E /* Sources */ = {
+-			isa = PBXSourcesBuildPhase;
+-			buildActionMask = 2147483647;
+-			files = (
+-				00E356F31AD99517003FC87E /* CleanProjectTests.m in Sources */,
+-			);
+-			runOnlyForDeploymentPostprocessing = 0;
+-		};
+ 		13B07F871A680F5B00A75B9A /* Sources */ = {
+ 			isa = PBXSourcesBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
+ 				13B07FBC1A68108700A75B9A /* AppDelegate.mm in Sources */,
+ 				13B07FC11A68108700A75B9A /* main.m in Sources */,
+-				D5488D7ACCEB4583A011A5CB /* noop-file.swift in Sources */,
++				B18059E884C0ABDD17F3DC3D /* ExpoModulesProvider.swift in Sources */,
++				10C383D5CF8740F5BD6E37E0 /* noop-file.swift in Sources */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+ /* End PBXSourcesBuildPhase section */
+ 
+-/* Begin PBXTargetDependency section */
+-		00E356F51AD99517003FC87E /* PBXTargetDependency */ = {
+-			isa = PBXTargetDependency;
+-			target = 13B07F861A680F5B00A75B9A /* CleanProject */;
+-			targetProxy = 00E356F41AD99517003FC87E /* PBXContainerItemProxy */;
+-		};
+-/* End PBXTargetDependency section */
+-
+ /* Begin XCBuildConfiguration section */
+-		00E356F61AD99517003FC87E /* Debug */ = {
+-			isa = XCBuildConfiguration;
+-			baseConfigurationReference = 5B7EB9410499542E8C5724F5 /* Pods-CleanProject-CleanProjectTests.debug.xcconfig */;
+-			buildSettings = {
+-				BUNDLE_LOADER = "$(TEST_HOST)";
+-				GCC_PREPROCESSOR_DEFINITIONS = (
+-					"DEBUG=1",
+-					"$(inherited)",
+-				);
+-				INFOPLIST_FILE = CleanProjectTests/Info.plist;
+-				IPHONEOS_DEPLOYMENT_TARGET = 12.4;
+-				LD_RUNPATH_SEARCH_PATHS = (
+-					"$(inherited)",
+-					"@executable_path/Frameworks",
+-					"@loader_path/Frameworks",
+-				);
+-				OTHER_LDFLAGS = (
+-					"-ObjC",
+-					"-lc++",
+-					"$(inherited)",
+-				);
+-				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
+-				PRODUCT_NAME = "$(TARGET_NAME)";
+-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CleanProject.app/CleanProject";
+-				TARGETED_DEVICE_FAMILY = "1";
+-			};
+-			name = Debug;
+-		};
+-		00E356F71AD99517003FC87E /* Release */ = {
+-			isa = XCBuildConfiguration;
+-			baseConfigurationReference = 89C6BE57DB24E9ADA2F236DE /* Pods-CleanProject-CleanProjectTests.release.xcconfig */;
+-			buildSettings = {
+-				BUNDLE_LOADER = "$(TEST_HOST)";
+-				COPY_PHASE_STRIP = NO;
+-				INFOPLIST_FILE = CleanProjectTests/Info.plist;
+-				IPHONEOS_DEPLOYMENT_TARGET = 12.4;
+-				LD_RUNPATH_SEARCH_PATHS = (
+-					"$(inherited)",
+-					"@executable_path/Frameworks",
+-					"@loader_path/Frameworks",
+-				);
+-				OTHER_LDFLAGS = (
+-					"-ObjC",
+-					"-lc++",
+-					"$(inherited)",
+-				);
+-				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
+-				PRODUCT_NAME = "$(TARGET_NAME)";
+-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CleanProject.app/CleanProject";
+-				TARGETED_DEVICE_FAMILY = "1";
+-			};
+-			name = Release;
+-		};
+ 		13B07F941A680F5B00A75B9A /* Debug */ = {
+ 			isa = XCBuildConfiguration;
+-			baseConfigurationReference = 3B4392A12AC88292D35C810B /* Pods-CleanProject.debug.xcconfig */;
++			baseConfigurationReference = 6C2E3173556A471DD304B334 /* Pods-CleanProject.debug.xcconfig */;
+ 			buildSettings = {
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CLANG_ENABLE_MODULES = YES;
++				CODE_SIGN_ENTITLEMENTS = CleanProject/CleanProject.entitlements;
+ 				CURRENT_PROJECT_VERSION = 1;
+ 				ENABLE_BITCODE = NO;
+-				INFOPLIST_FILE = CleanProject/Info.plist;
+-				LD_RUNPATH_SEARCH_PATHS = (
++				GCC_PREPROCESSOR_DEFINITIONS = (
+ 					"$(inherited)",
+-					"@executable_path/Frameworks",
++					"FB_SONARKIT_ENABLED=1",
+ 				);
++				INFOPLIST_FILE = CleanProject/Info.plist;
++				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
++				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+ 				MARKETING_VERSION = 1.0;
+ 				OTHER_LDFLAGS = (
+ 					"$(inherited)",
+ 					"-ObjC",
+ 					"-lc++",
+ 				);
+-				PRODUCT_BUNDLE_IDENTIFIER = "com.cleanproject";
+-				PRODUCT_NAME = "CleanProject";
++				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
++				PRODUCT_BUNDLE_IDENTIFIER = com.cleanproject;
++				PRODUCT_NAME = CleanProject;
+ 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+ 				SWIFT_VERSION = 5.0;
++				TARGETED_DEVICE_FAMILY = 1;
+ 				VERSIONING_SYSTEM = "apple-generic";
+-				TARGETED_DEVICE_FAMILY = "1";
+-				CODE_SIGN_ENTITLEMENTS = CleanProject/CleanProject.entitlements;
+ 			};
+ 			name = Debug;
+ 		};
+ 		13B07F951A680F5B00A75B9A /* Release */ = {
+ 			isa = XCBuildConfiguration;
+-			baseConfigurationReference = 5709B34CF0A7D63546082F79 /* Pods-CleanProject.release.xcconfig */;
++			baseConfigurationReference = 7A4D352CD337FB3A3BF06240 /* Pods-CleanProject.release.xcconfig */;
+ 			buildSettings = {
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CLANG_ENABLE_MODULES = YES;
++				CODE_SIGN_ENTITLEMENTS = CleanProject/CleanProject.entitlements;
+ 				CURRENT_PROJECT_VERSION = 1;
+ 				INFOPLIST_FILE = CleanProject/Info.plist;
+-				LD_RUNPATH_SEARCH_PATHS = (
+-					"$(inherited)",
+-					"@executable_path/Frameworks",
+-				);
++				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
++				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+ 				MARKETING_VERSION = 1.0;
+ 				OTHER_LDFLAGS = (
+ 					"$(inherited)",
+ 					"-ObjC",
+ 					"-lc++",
+ 				);
+-				PRODUCT_BUNDLE_IDENTIFIER = "com.cleanproject";
+-				PRODUCT_NAME = "CleanProject";
++				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
++				PRODUCT_BUNDLE_IDENTIFIER = com.cleanproject;
++				PRODUCT_NAME = CleanProject;
+ 				SWIFT_VERSION = 5.0;
++				TARGETED_DEVICE_FAMILY = 1;
+ 				VERSIONING_SYSTEM = "apple-generic";
+-				TARGETED_DEVICE_FAMILY = "1";
+-				CODE_SIGN_ENTITLEMENTS = CleanProject/CleanProject.entitlements;
+ 			};
+ 			name = Release;
+ 		};
+@@ -567,7 +397,6 @@
+ 				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+ 				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+ 				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+ 				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+ 				CLANG_WARN_STRICT_PROTOTYPES = YES;
+ 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+@@ -593,24 +422,11 @@
+ 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+ 				GCC_WARN_UNUSED_FUNCTION = YES;
+ 				GCC_WARN_UNUSED_VARIABLE = YES;
+-				IPHONEOS_DEPLOYMENT_TARGET = 12.4;
+-				LD_RUNPATH_SEARCH_PATHS = (
+-					/usr/lib/swift,
+-					"$(inherited)",
+-				);
+-				LIBRARY_SEARCH_PATHS = (
+-					"\"$(SDKROOT)/usr/lib/swift\"",
+-					"\"$(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)\"",
+-					"\"$(inherited)\"",
+-				);
++				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
++				LD_RUNPATH_SEARCH_PATHS = "/usr/lib/swift $(inherited)";
++				LIBRARY_SEARCH_PATHS = "$(SDKROOT)/usr/lib/swift\"$(inherited)\"";
+ 				MTL_ENABLE_DEBUG_INFO = YES;
+ 				ONLY_ACTIVE_ARCH = YES;
+-				OTHER_CPLUSPLUSFLAGS = (
+-					"$(OTHER_CFLAGS)",
+-					"-DFOLLY_NO_CONFIG",
+-					"-DFOLLY_MOBILE=1",
+-					"-DFOLLY_USE_LIBCPP=1",
+-				);
+ 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
+ 				SDKROOT = iphoneos;
+ 			};
+@@ -639,7 +455,6 @@
+ 				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+ 				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+ 				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+ 				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+ 				CLANG_WARN_STRICT_PROTOTYPES = YES;
+ 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+@@ -658,23 +473,10 @@
+ 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+ 				GCC_WARN_UNUSED_FUNCTION = YES;
+ 				GCC_WARN_UNUSED_VARIABLE = YES;
+-				IPHONEOS_DEPLOYMENT_TARGET = 12.4;
+-				LD_RUNPATH_SEARCH_PATHS = (
+-					/usr/lib/swift,
+-					"$(inherited)",
+-				);
+-				LIBRARY_SEARCH_PATHS = (
+-					"\"$(SDKROOT)/usr/lib/swift\"",
+-					"\"$(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)\"",
+-					"\"$(inherited)\"",
+-				);
++				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
++				LD_RUNPATH_SEARCH_PATHS = "/usr/lib/swift $(inherited)";
++				LIBRARY_SEARCH_PATHS = "$(SDKROOT)/usr/lib/swift\"$(inherited)\"";
+ 				MTL_ENABLE_DEBUG_INFO = NO;
+-				OTHER_CPLUSPLUSFLAGS = (
+-					"$(OTHER_CFLAGS)",
+-					"-DFOLLY_NO_CONFIG",
+-					"-DFOLLY_MOBILE=1",
+-					"-DFOLLY_USE_LIBCPP=1",
+-				);
+ 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
+ 				SDKROOT = iphoneos;
+ 				VALIDATE_PRODUCT = YES;
+@@ -684,15 +486,6 @@
+ /* End XCBuildConfiguration section */
+ 
+ /* Begin XCConfigurationList section */
+-		00E357021AD99517003FC87E /* Build configuration list for PBXNativeTarget "CleanProjectTests" */ = {
+-			isa = XCConfigurationList;
+-			buildConfigurations = (
+-				00E356F61AD99517003FC87E /* Debug */,
+-				00E356F71AD99517003FC87E /* Release */,
+-			);
+-			defaultConfigurationIsVisible = 0;
+-			defaultConfigurationName = Release;
+-		};
+ 		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "CleanProject" */ = {
+ 			isa = XCConfigurationList;
+ 			buildConfigurations = (
+diff --git a/ios/CleanProject.xcodeproj/xcshareddata/xcschemes/CleanProject.xcscheme b/ios/CleanProject.xcodeproj/xcshareddata/xcschemes/CleanProject.xcscheme
+index 645dbe3..2f81635 100644
+--- a/ios/CleanProject.xcodeproj/xcshareddata/xcschemes/CleanProject.xcscheme
++++ b/ios/CleanProject.xcodeproj/xcshareddata/xcschemes/CleanProject.xcscheme
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <Scheme
+-   LastUpgradeVersion = "1210"
++   LastUpgradeVersion = "1130"
+    version = "1.3">
+    <BuildAction
+       parallelizeBuildables = "YES"
+diff --git a/ios/CleanProject/AppDelegate.h b/ios/CleanProject/AppDelegate.h
+index 5d28082..1658a43 100644
+--- a/ios/CleanProject/AppDelegate.h
++++ b/ios/CleanProject/AppDelegate.h
+@@ -1,6 +1,7 @@
+ #import <RCTAppDelegate.h>
+ #import <UIKit/UIKit.h>
++#import <Expo/Expo.h>
+ 
+-@interface AppDelegate : RCTAppDelegate
++@interface AppDelegate : EXAppDelegateWrapper
+ 
+ @end
+diff --git a/ios/CleanProject/AppDelegate.mm b/ios/CleanProject/AppDelegate.mm
+index 02ca6e7..8cb5aef 100644
+--- a/ios/CleanProject/AppDelegate.mm
++++ b/ios/CleanProject/AppDelegate.mm
+@@ -1,12 +1,14 @@
+ #import "AppDelegate.h"
+ 
+ #import <React/RCTBundleURLProvider.h>
++#import <React/RCTLinkingManager.h>
+ 
+ @implementation AppDelegate
+ 
+ - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
+ {
+-  self.moduleName = @"CleanProject";
++  self.moduleName = @"main";
++
+   // You can add your custom initial props in the dictionary below.
+   // They will be passed down to the ViewController used by React Native.
+   self.initialProps = @{};
+@@ -33,4 +35,33 @@ - (BOOL)concurrentRootEnabled
+   return true;
+ }
+ 
++// Linking API
++- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options {
++  return [super application:application openURL:url options:options] || [RCTLinkingManager application:application openURL:url options:options];
++}
++
++// Universal Links
++- (BOOL)application:(UIApplication *)application continueUserActivity:(nonnull NSUserActivity *)userActivity restorationHandler:(nonnull void (^)(NSArray<id<UIUserActivityRestoring>> * _Nullable))restorationHandler {
++  BOOL result = [RCTLinkingManager application:application continueUserActivity:userActivity restorationHandler:restorationHandler];
++  return [super application:application continueUserActivity:userActivity restorationHandler:restorationHandler] || result;
++}
++
++// Explicitly define remote notification delegates to ensure compatibility with some third-party libraries
++- (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
++{
++  return [super application:application didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
++}
++
++// Explicitly define remote notification delegates to ensure compatibility with some third-party libraries
++- (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
++{
++  return [super application:application didFailToRegisterForRemoteNotificationsWithError:error];
++}
++
++// Explicitly define remote notification delegates to ensure compatibility with some third-party libraries
++- (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
++{
++  return [super application:application didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
++}
++
+ @end
+diff --git a/ios/CleanProject/Images.xcassets/AppIcon.appiconset/Contents.json b/ios/CleanProject/Images.xcassets/AppIcon.appiconset/Contents.json
+index 8121323..bf722cb 100644
+--- a/ios/CleanProject/Images.xcassets/AppIcon.appiconset/Contents.json
++++ b/ios/CleanProject/Images.xcassets/AppIcon.appiconset/Contents.json
+@@ -2,52 +2,37 @@
+   "images" : [
+     {
+       "idiom" : "iphone",
+-      "scale" : "2x",
+-      "size" : "20x20"
++      "size" : "29x29",
++      "scale" : "2x"
+     },
+     {
+       "idiom" : "iphone",
+-      "scale" : "3x",
+-      "size" : "20x20"
++      "size" : "29x29",
++      "scale" : "3x"
+     },
+     {
+       "idiom" : "iphone",
+-      "scale" : "2x",
+-      "size" : "29x29"
++      "size" : "40x40",
++      "scale" : "2x"
+     },
+     {
+       "idiom" : "iphone",
+-      "scale" : "3x",
+-      "size" : "29x29"
++      "size" : "40x40",
++      "scale" : "3x"
+     },
+     {
+       "idiom" : "iphone",
+-      "scale" : "2x",
+-      "size" : "40x40"
++      "size" : "60x60",
++      "scale" : "2x"
+     },
+     {
+       "idiom" : "iphone",
+-      "scale" : "3x",
+-      "size" : "40x40"
+-    },
+-    {
+-      "idiom" : "iphone",
+-      "scale" : "2x",
+-      "size" : "60x60"
+-    },
+-    {
+-      "idiom" : "iphone",
+-      "scale" : "3x",
+-      "size" : "60x60"
+-    },
+-    {
+-      "idiom" : "ios-marketing",
+-      "scale" : "1x",
+-      "size" : "1024x1024"
++      "size" : "60x60",
++      "scale" : "3x"
+     }
+   ],
+   "info" : {
+-    "author" : "xcode",
+-    "version" : 1
++    "version" : 1,
++    "author" : "expo"
+   }
+-}
++}
+\ No newline at end of file
+diff --git a/ios/CleanProject/Images.xcassets/Contents.json b/ios/CleanProject/Images.xcassets/Contents.json
+index 2d92bd5..ed285c2 100644
+--- a/ios/CleanProject/Images.xcassets/Contents.json
++++ b/ios/CleanProject/Images.xcassets/Contents.json
+@@ -1,6 +1,6 @@
+ {
+   "info" : {
+     "version" : 1,
+-    "author" : "xcode"
++    "author" : "expo"
+   }
+ }
+diff --git a/ios/CleanProject/Info.plist b/ios/CleanProject/Info.plist
+index 2f10669..a2d250e 100644
+--- a/ios/CleanProject/Info.plist
++++ b/ios/CleanProject/Info.plist
+@@ -3,7 +3,7 @@
+ <plist version="1.0">
+   <dict>
+     <key>CFBundleDevelopmentRegion</key>
+-    <string>en</string>
++    <string>$(DEVELOPMENT_LANGUAGE)</string>
+     <key>CFBundleDisplayName</key>
+     <string>CleanProject</string>
+     <key>CFBundleExecutable</key>
+@@ -15,7 +15,7 @@
+     <key>CFBundleName</key>
+     <string>$(PRODUCT_NAME)</string>
+     <key>CFBundlePackageType</key>
+-    <string>APPL</string>
++    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+     <key>CFBundleShortVersionString</key>
+     <string>0.0.1</string>
+     <key>CFBundleSignature</key>
+@@ -35,6 +35,8 @@
+     <true/>
+     <key>NSAppTransportSecurity</key>
+     <dict>
++      <key>NSAllowsArbitraryLoads</key>
++      <true/>
+       <key>NSExceptionDomains</key>
+       <dict>
+         <key>localhost</key>
+@@ -44,8 +46,6 @@
+         </dict>
+       </dict>
+     </dict>
+-    <key>NSLocationWhenInUseUsageDescription</key>
+-    <string/>
+     <key>UILaunchStoryboardName</key>
+     <string>SplashScreen</string>
+     <key>UIRequiredDeviceCapabilities</key>
+@@ -54,6 +54,8 @@
+     </array>
+     <key>UIRequiresFullScreen</key>
+     <false/>
++    <key>UIStatusBarStyle</key>
++    <string>UIStatusBarStyleDefault</string>
+     <key>UISupportedInterfaceOrientations</key>
+     <array>
+       <string>UIInterfaceOrientationPortrait</string>
+diff --git a/ios/CleanProject/LaunchScreen.storyboard b/ios/CleanProject/LaunchScreen.storyboard
+deleted file mode 100644
+index 363d01c..0000000
+--- a/ios/CleanProject/LaunchScreen.storyboard
++++ /dev/null
+@@ -1,47 +0,0 @@
+-<?xml version="1.0" encoding="UTF-8"?>
+-<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="15702" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
+-    <device id="retina4_7" orientation="portrait" appearance="light"/>
+-    <dependencies>
+-        <deployment identifier="iOS"/>
+-        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="15704"/>
+-        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+-        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+-    </dependencies>
+-    <scenes>
+-        <!--View Controller-->
+-        <scene sceneID="EHf-IW-A2E">
+-            <objects>
+-                <viewController id="01J-lp-oVM" sceneMemberID="viewController">
+-                    <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
+-                        <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
+-                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+-                        <subviews>
+-                            <label opaque="NO" clipsSubviews="YES" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="CleanProject" textAlignment="center" lineBreakMode="middleTruncation" baselineAdjustment="alignBaselines" minimumFontSize="18" translatesAutoresizingMaskIntoConstraints="NO" id="GJd-Yh-RWb">
+-                                <rect key="frame" x="0.0" y="202" width="375" height="43"/>
+-                                <fontDescription key="fontDescription" type="boldSystem" pointSize="36"/>
+-                                <nil key="highlightedColor"/>
+-                            </label>
+-                            <label opaque="NO" clipsSubviews="YES" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Powered by React Native" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" minimumFontSize="9" translatesAutoresizingMaskIntoConstraints="NO" id="MN2-I3-ftu">
+-                                <rect key="frame" x="0.0" y="626" width="375" height="21"/>
+-                                <fontDescription key="fontDescription" type="system" pointSize="17"/>
+-                                <nil key="highlightedColor"/>
+-                            </label>
+-                        </subviews>
+-                        <color key="backgroundColor" systemColor="systemBackgroundColor" cocoaTouchSystemColor="whiteColor"/>
+-                        <constraints>
+-                            <constraint firstItem="Bcu-3y-fUS" firstAttribute="bottom" secondItem="MN2-I3-ftu" secondAttribute="bottom" constant="20" id="OZV-Vh-mqD"/>
+-                            <constraint firstItem="Bcu-3y-fUS" firstAttribute="centerX" secondItem="GJd-Yh-RWb" secondAttribute="centerX" id="Q3B-4B-g5h"/>
+-                            <constraint firstItem="MN2-I3-ftu" firstAttribute="centerX" secondItem="Bcu-3y-fUS" secondAttribute="centerX" id="akx-eg-2ui"/>
+-                            <constraint firstItem="MN2-I3-ftu" firstAttribute="leading" secondItem="Bcu-3y-fUS" secondAttribute="leading" id="i1E-0Y-4RG"/>
+-                            <constraint firstItem="GJd-Yh-RWb" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="bottom" multiplier="1/3" constant="1" id="moa-c2-u7t"/>
+-                            <constraint firstItem="GJd-Yh-RWb" firstAttribute="leading" secondItem="Bcu-3y-fUS" secondAttribute="leading" symbolic="YES" id="x7j-FC-K8j"/>
+-                        </constraints>
+-                        <viewLayoutGuide key="safeArea" id="Bcu-3y-fUS"/>
+-                    </view>
+-                </viewController>
+-                <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
+-            </objects>
+-            <point key="canvasLocation" x="52.173913043478265" y="375"/>
+-        </scene>
+-    </scenes>
+-</document>
+diff --git a/ios/CleanProject/main.m b/ios/CleanProject/main.m
+index d645c72..25181b6 100644
+--- a/ios/CleanProject/main.m
++++ b/ios/CleanProject/main.m
+@@ -2,9 +2,9 @@
+ 
+ #import "AppDelegate.h"
+ 
+-int main(int argc, char *argv[])
+-{
++int main(int argc, char * argv[]) {
+   @autoreleasepool {
+     return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
+   }
+ }
++
+diff --git a/ios/CleanProjectTests/CleanProjectTests.m b/ios/CleanProjectTests/CleanProjectTests.m
+deleted file mode 100644
+index 50c9e25..0000000
+--- a/ios/CleanProjectTests/CleanProjectTests.m
++++ /dev/null
+@@ -1,66 +0,0 @@
+-#import <UIKit/UIKit.h>
+-#import <XCTest/XCTest.h>
+-
+-#import <React/RCTLog.h>
+-#import <React/RCTRootView.h>
+-
+-#define TIMEOUT_SECONDS 600
+-#define TEXT_TO_LOOK_FOR @"Welcome to React"
+-
+-@interface CleanProjectTests : XCTestCase
+-
+-@end
+-
+-@implementation CleanProjectTests
+-
+-- (BOOL)findSubviewInView:(UIView *)view matching:(BOOL (^)(UIView *view))test
+-{
+-  if (test(view)) {
+-    return YES;
+-  }
+-  for (UIView *subview in [view subviews]) {
+-    if ([self findSubviewInView:subview matching:test]) {
+-      return YES;
+-    }
+-  }
+-  return NO;
+-}
+-
+-- (void)testRendersWelcomeScreen
+-{
+-  UIViewController *vc = [[[RCTSharedApplication() delegate] window] rootViewController];
+-  NSDate *date = [NSDate dateWithTimeIntervalSinceNow:TIMEOUT_SECONDS];
+-  BOOL foundElement = NO;
+-
+-  __block NSString *redboxError = nil;
+-#ifdef DEBUG
+-  RCTSetLogFunction(
+-      ^(RCTLogLevel level, RCTLogSource source, NSString *fileName, NSNumber *lineNumber, NSString *message) {
+-        if (level >= RCTLogLevelError) {
+-          redboxError = message;
+-        }
+-      });
+-#endif
+-
+-  while ([date timeIntervalSinceNow] > 0 && !foundElement && !redboxError) {
+-    [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+-    [[NSRunLoop mainRunLoop] runMode:NSRunLoopCommonModes beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+-
+-    foundElement = [self findSubviewInView:vc.view
+-                                  matching:^BOOL(UIView *view) {
+-                                    if ([view.accessibilityLabel isEqualToString:TEXT_TO_LOOK_FOR]) {
+-                                      return YES;
+-                                    }
+-                                    return NO;
+-                                  }];
+-  }
+-
+-#ifdef DEBUG
+-  RCTSetLogFunction(RCTDefaultLogFunction);
+-#endif
+-
+-  XCTAssertNil(redboxError, @"RedBox error: %@", redboxError);
+-  XCTAssertTrue(foundElement, @"Couldn't find element with text '%@' in %d seconds", TEXT_TO_LOOK_FOR, TIMEOUT_SECONDS);
+-}
+-
+-@end
+diff --git a/ios/CleanProjectTests/Info.plist b/ios/CleanProjectTests/Info.plist
+deleted file mode 100644
+index ba72822..0000000
+--- a/ios/CleanProjectTests/Info.plist
++++ /dev/null
+@@ -1,24 +0,0 @@
+-<?xml version="1.0" encoding="UTF-8"?>
+-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+-<plist version="1.0">
+-<dict>
+-	<key>CFBundleDevelopmentRegion</key>
+-	<string>en</string>
+-	<key>CFBundleExecutable</key>
+-	<string>$(EXECUTABLE_NAME)</string>
+-	<key>CFBundleIdentifier</key>
+-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+-	<key>CFBundleInfoDictionaryVersion</key>
+-	<string>6.0</string>
+-	<key>CFBundleName</key>
+-	<string>$(PRODUCT_NAME)</string>
+-	<key>CFBundlePackageType</key>
+-	<string>BNDL</string>
+-	<key>CFBundleShortVersionString</key>
+-	<string>1.0</string>
+-	<key>CFBundleSignature</key>
+-	<string>????</string>
+-	<key>CFBundleVersion</key>
+-	<string>1</string>
+-</dict>
+-</plist>
+diff --git a/ios/Podfile b/ios/Podfile
+index 4791dec..4934d8e 100644
+--- a/ios/Podfile
++++ b/ios/Podfile
+@@ -1,60 +1,90 @@
+-require_relative '../node_modules/react-native/scripts/react_native_pods'
+-require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
++require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), "scripts/autolinking")
++require File.join(File.dirname(`node --print "require.resolve('react-native/package.json')"`), "scripts/react_native_pods")
++require File.join(File.dirname(`node --print "require.resolve('@react-native-community/cli-platform-ios/package.json')"`), "native_modules")
++
++require 'json'
++podfile_properties = JSON.parse(File.read(File.join(__dir__, 'Podfile.properties.json'))) rescue {}
++
++ENV['RCT_NEW_ARCH_ENABLED'] = podfile_properties['newArchEnabled'] == 'true' ? '1' : '0'
++ENV['EX_DEV_CLIENT_NETWORK_INSPECTOR'] = '1' if podfile_properties['EX_DEV_CLIENT_NETWORK_INSPECTOR'] == 'true'
++
++platform :ios, podfile_properties['ios.deploymentTarget'] || '13.0'
++install! 'cocoapods',
++  :deterministic_uuids => false
+ 
+-platform :ios, min_ios_version_supported
+ prepare_react_native_project!
+ 
+ # If you are using a `react-native-flipper` your iOS build will fail when `NO_FLIPPER=1` is set.
+-# because `react-native-flipper` depends on (FlipperKit,...) that will be excluded
++# because `react-native-flipper` depends on (FlipperKit,...), which will be excluded. To fix this,
++# you can also exclude `react-native-flipper` in `react-native.config.js`
+ #
+-# To fix this you can also exclude `react-native-flipper` using a `react-native.config.js`
+ # ```js
+ # module.exports = {
+ #   dependencies: {
+ #     ...(process.env.NO_FLIPPER ? { 'react-native-flipper': { platforms: { ios: null } } } : {}),
++#   }
++# }
+ # ```
+-flipper_config = ENV['NO_FLIPPER'] == "1" ? FlipperConfiguration.disabled : FlipperConfiguration.enabled
+-
+-linkage = ENV['USE_FRAMEWORKS']
+-if linkage != nil
+-  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+-  use_frameworks! :linkage => linkage.to_sym
++flipper_config = FlipperConfiguration.disabled
++if ENV['NO_FLIPPER'] == '1' then
++  # Explicitly disabled through environment variables
++  flipper_config = FlipperConfiguration.disabled
++elsif podfile_properties.key?('ios.flipper') then
++  # Configure Flipper in Podfile.properties.json
++  if podfile_properties['ios.flipper'] == 'true' then
++    flipper_config = FlipperConfiguration.enabled(["Debug", "Release"])
++  elsif podfile_properties['ios.flipper'] != 'false' then
++    flipper_config = FlipperConfiguration.enabled(["Debug", "Release"], { 'Flipper' => podfile_properties['ios.flipper'] })
++  end
+ end
+ 
+ target 'CleanProject' do
++  use_expo_modules!
+   config = use_native_modules!
+ 
++  use_frameworks! :linkage => podfile_properties['ios.useFrameworks'].to_sym if podfile_properties['ios.useFrameworks']
++  use_frameworks! :linkage => ENV['USE_FRAMEWORKS'].to_sym if ENV['USE_FRAMEWORKS']
++
+   # Flags change depending on the env values.
+   flags = get_default_flags()
+ 
+   use_react_native!(
+     :path => config[:reactNativePath],
+-    # Hermes is now enabled by default. Disable by setting this flag to false.
+-    # Upcoming versions of React Native may rely on get_default_flags(), but
+-    # we make it explicit here to aid in the React Native upgrade process.
+-    :hermes_enabled => flags[:hermes_enabled],
++    :hermes_enabled => podfile_properties['expo.jsEngine'] == nil || podfile_properties['expo.jsEngine'] == 'hermes',
+     :fabric_enabled => flags[:fabric_enabled],
+-    # Enables Flipper.
+-    #
+-    # Note that if you have use_frameworks! enabled, Flipper will not work and
+-    # you should disable the next line.
+-    :flipper_configuration => flipper_config,
+     # An absolute path to your application root.
+-    :app_path => "#{Pod::Config.instance.installation_root}/.."
++    :app_path => "#{Pod::Config.instance.installation_root}/..",
++    # Note that if you have use_frameworks! enabled, Flipper will not work if enabled
++    :flipper_configuration => flipper_config
+   )
+ 
+-  target 'CleanProjectTests' do
+-    inherit! :complete
+-    # Pods for testing
+-  end
+-
+   post_install do |installer|
+     react_native_post_install(
+       installer,
++      config[:reactNativePath],
+       # Set `mac_catalyst_enabled` to `true` in order to apply patches
+       # necessary for Mac Catalyst builds
+       :mac_catalyst_enabled => false
+     )
+     __apply_Xcode_12_5_M1_post_install_workaround(installer)
++
++    # This is necessary for Xcode 14, because it signs resource bundles by default
++    # when building for devices.
++    installer.target_installation_results.pod_target_installation_results
++      .each do |pod_name, target_installation_result|
++      target_installation_result.resource_bundle_targets.each do |resource_bundle_target|
++        resource_bundle_target.build_configurations.each do |config|
++          config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
++        end
++      end
++    end
++  end
++
++  post_integrate do |installer|
++    begin
++      expo_patch_react_imports!(installer)
++    rescue => e
++      Pod::UI.warn e
++    end
+   end
+ end
+diff --git a/ios/Podfile.lock b/ios/Podfile.lock
+index 2ea3bd7..5fdb08e 100644
+--- a/ios/Podfile.lock
++++ b/ios/Podfile.lock
+@@ -1,7 +1,25 @@
+ PODS:
+   - boost (1.76.0)
+-  - CocoaAsyncSocket (7.6.5)
+   - DoubleConversion (1.1.6)
++  - EXApplication (5.1.1):
++    - ExpoModulesCore
++  - EXConstants (14.2.1):
++    - ExpoModulesCore
++  - EXFileSystem (15.2.2):
++    - ExpoModulesCore
++  - EXFont (11.1.1):
++    - ExpoModulesCore
++  - Expo (48.0.16):
++    - ExpoModulesCore
++  - ExpoKeepAwake (12.0.1):
++    - ExpoModulesCore
++  - ExpoModulesCore (1.2.7):
++    - React-Core
++    - React-RCTAppDelegate
++    - ReactCommon/turbomodule/core
++  - EXSplashScreen (0.18.2):
++    - ExpoModulesCore
++    - React-Core
+   - FBLazyVector (0.71.7)
+   - FBReactNativeSpec (0.71.7):
+     - RCT-Folly (= 2021.07.22.00)
+@@ -10,74 +28,12 @@ PODS:
+     - React-Core (= 0.71.7)
+     - React-jsi (= 0.71.7)
+     - ReactCommon/turbomodule/core (= 0.71.7)
+-  - Flipper (0.125.0):
+-    - Flipper-Folly (~> 2.6)
+-    - Flipper-RSocket (~> 1.4)
+-  - Flipper-Boost-iOSX (1.76.0.1.11)
+-  - Flipper-DoubleConversion (3.2.0.1)
+-  - Flipper-Fmt (7.1.7)
+-  - Flipper-Folly (2.6.10):
+-    - Flipper-Boost-iOSX
+-    - Flipper-DoubleConversion
+-    - Flipper-Fmt (= 7.1.7)
+-    - Flipper-Glog
+-    - libevent (~> 2.1.12)
+-    - OpenSSL-Universal (= 1.1.1100)
+-  - Flipper-Glog (0.5.0.5)
+-  - Flipper-PeerTalk (0.0.4)
+-  - Flipper-RSocket (1.4.3):
+-    - Flipper-Folly (~> 2.6)
+-  - FlipperKit (0.125.0):
+-    - FlipperKit/Core (= 0.125.0)
+-  - FlipperKit/Core (0.125.0):
+-    - Flipper (~> 0.125.0)
+-    - FlipperKit/CppBridge
+-    - FlipperKit/FBCxxFollyDynamicConvert
+-    - FlipperKit/FBDefines
+-    - FlipperKit/FKPortForwarding
+-    - SocketRocket (~> 0.6.0)
+-  - FlipperKit/CppBridge (0.125.0):
+-    - Flipper (~> 0.125.0)
+-  - FlipperKit/FBCxxFollyDynamicConvert (0.125.0):
+-    - Flipper-Folly (~> 2.6)
+-  - FlipperKit/FBDefines (0.125.0)
+-  - FlipperKit/FKPortForwarding (0.125.0):
+-    - CocoaAsyncSocket (~> 7.6)
+-    - Flipper-PeerTalk (~> 0.0.4)
+-  - FlipperKit/FlipperKitHighlightOverlay (0.125.0)
+-  - FlipperKit/FlipperKitLayoutHelpers (0.125.0):
+-    - FlipperKit/Core
+-    - FlipperKit/FlipperKitHighlightOverlay
+-    - FlipperKit/FlipperKitLayoutTextSearchable
+-  - FlipperKit/FlipperKitLayoutIOSDescriptors (0.125.0):
+-    - FlipperKit/Core
+-    - FlipperKit/FlipperKitHighlightOverlay
+-    - FlipperKit/FlipperKitLayoutHelpers
+-    - YogaKit (~> 1.18)
+-  - FlipperKit/FlipperKitLayoutPlugin (0.125.0):
+-    - FlipperKit/Core
+-    - FlipperKit/FlipperKitHighlightOverlay
+-    - FlipperKit/FlipperKitLayoutHelpers
+-    - FlipperKit/FlipperKitLayoutIOSDescriptors
+-    - FlipperKit/FlipperKitLayoutTextSearchable
+-    - YogaKit (~> 1.18)
+-  - FlipperKit/FlipperKitLayoutTextSearchable (0.125.0)
+-  - FlipperKit/FlipperKitNetworkPlugin (0.125.0):
+-    - FlipperKit/Core
+-  - FlipperKit/FlipperKitReactPlugin (0.125.0):
+-    - FlipperKit/Core
+-  - FlipperKit/FlipperKitUserDefaultsPlugin (0.125.0):
+-    - FlipperKit/Core
+-  - FlipperKit/SKIOSNetworkPlugin (0.125.0):
+-    - FlipperKit/Core
+-    - FlipperKit/FlipperKitNetworkPlugin
+   - fmt (6.2.1)
+   - glog (0.3.5)
+   - hermes-engine (0.71.7):
+     - hermes-engine/Pre-built (= 0.71.7)
+   - hermes-engine/Pre-built (0.71.7)
+   - libevent (2.1.12)
+-  - OpenSSL-Universal (1.1.1100)
+   - RCT-Folly (2021.07.22.00):
+     - boost
+     - DoubleConversion
+@@ -413,41 +369,24 @@ PODS:
+     - React-jsi (= 0.71.7)
+     - React-logger (= 0.71.7)
+     - React-perflogger (= 0.71.7)
+-  - SocketRocket (0.6.0)
+   - Yoga (1.14.0)
+-  - YogaKit (1.18.1):
+-    - Yoga (~> 1.14)
+ 
+ DEPENDENCIES:
+   - boost (from `../node_modules/react-native/third-party-podspecs/boost.podspec`)
+   - DoubleConversion (from `../node_modules/react-native/third-party-podspecs/DoubleConversion.podspec`)
++  - EXApplication (from `../node_modules/expo-application/ios`)
++  - EXConstants (from `../node_modules/expo-constants/ios`)
++  - EXFileSystem (from `../node_modules/expo-file-system/ios`)
++  - EXFont (from `../node_modules/expo-font/ios`)
++  - Expo (from `../node_modules/expo`)
++  - ExpoKeepAwake (from `../node_modules/expo-keep-awake/ios`)
++  - ExpoModulesCore (from `../node_modules/expo-modules-core`)
++  - EXSplashScreen (from `../node_modules/expo-splash-screen/ios`)
+   - FBLazyVector (from `../node_modules/react-native/Libraries/FBLazyVector`)
+   - FBReactNativeSpec (from `../node_modules/react-native/React/FBReactNativeSpec`)
+-  - Flipper (= 0.125.0)
+-  - Flipper-Boost-iOSX (= 1.76.0.1.11)
+-  - Flipper-DoubleConversion (= 3.2.0.1)
+-  - Flipper-Fmt (= 7.1.7)
+-  - Flipper-Folly (= 2.6.10)
+-  - Flipper-Glog (= 0.5.0.5)
+-  - Flipper-PeerTalk (= 0.0.4)
+-  - Flipper-RSocket (= 1.4.3)
+-  - FlipperKit (= 0.125.0)
+-  - FlipperKit/Core (= 0.125.0)
+-  - FlipperKit/CppBridge (= 0.125.0)
+-  - FlipperKit/FBCxxFollyDynamicConvert (= 0.125.0)
+-  - FlipperKit/FBDefines (= 0.125.0)
+-  - FlipperKit/FKPortForwarding (= 0.125.0)
+-  - FlipperKit/FlipperKitHighlightOverlay (= 0.125.0)
+-  - FlipperKit/FlipperKitLayoutPlugin (= 0.125.0)
+-  - FlipperKit/FlipperKitLayoutTextSearchable (= 0.125.0)
+-  - FlipperKit/FlipperKitNetworkPlugin (= 0.125.0)
+-  - FlipperKit/FlipperKitReactPlugin (= 0.125.0)
+-  - FlipperKit/FlipperKitUserDefaultsPlugin (= 0.125.0)
+-  - FlipperKit/SKIOSNetworkPlugin (= 0.125.0)
+   - glog (from `../node_modules/react-native/third-party-podspecs/glog.podspec`)
+   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
+   - libevent (~> 2.1.12)
+-  - OpenSSL-Universal (= 1.1.1100)
+   - RCT-Folly (from `../node_modules/react-native/third-party-podspecs/RCT-Folly.podspec`)
+   - RCTRequired (from `../node_modules/react-native/Libraries/RCTRequired`)
+   - RCTTypeSafety (from `../node_modules/react-native/Libraries/TypeSafety`)
+@@ -455,7 +394,6 @@ DEPENDENCIES:
+   - React-callinvoker (from `../node_modules/react-native/ReactCommon/callinvoker`)
+   - React-Codegen (from `build/generated/ios`)
+   - React-Core (from `../node_modules/react-native/`)
+-  - React-Core/DevSupport (from `../node_modules/react-native/`)
+   - React-Core/RCTWebSocket (from `../node_modules/react-native/`)
+   - React-CoreModules (from `../node_modules/react-native/React/CoreModules`)
+   - React-cxxreact (from `../node_modules/react-native/ReactCommon/cxxreact`)
+@@ -481,27 +419,30 @@ DEPENDENCIES:
+ 
+ SPEC REPOS:
+   trunk:
+-    - CocoaAsyncSocket
+-    - Flipper
+-    - Flipper-Boost-iOSX
+-    - Flipper-DoubleConversion
+-    - Flipper-Fmt
+-    - Flipper-Folly
+-    - Flipper-Glog
+-    - Flipper-PeerTalk
+-    - Flipper-RSocket
+-    - FlipperKit
+     - fmt
+     - libevent
+-    - OpenSSL-Universal
+-    - SocketRocket
+-    - YogaKit
+ 
+ EXTERNAL SOURCES:
+   boost:
+     :podspec: "../node_modules/react-native/third-party-podspecs/boost.podspec"
+   DoubleConversion:
+     :podspec: "../node_modules/react-native/third-party-podspecs/DoubleConversion.podspec"
++  EXApplication:
++    :path: "../node_modules/expo-application/ios"
++  EXConstants:
++    :path: "../node_modules/expo-constants/ios"
++  EXFileSystem:
++    :path: "../node_modules/expo-file-system/ios"
++  EXFont:
++    :path: "../node_modules/expo-font/ios"
++  Expo:
++    :path: "../node_modules/expo"
++  ExpoKeepAwake:
++    :path: "../node_modules/expo-keep-awake/ios"
++  ExpoModulesCore:
++    :path: "../node_modules/expo-modules-core"
++  EXSplashScreen:
++    :path: "../node_modules/expo-splash-screen/ios"
+   FBLazyVector:
+     :path: "../node_modules/react-native/Libraries/FBLazyVector"
+   FBReactNativeSpec:
+@@ -569,24 +510,21 @@ EXTERNAL SOURCES:
+ 
+ SPEC CHECKSUMS:
+   boost: 57d2868c099736d80fcd648bf211b4431e51a558
+-  CocoaAsyncSocket: 065fd1e645c7abab64f7a6a2007a48038fdc6a99
+   DoubleConversion: 5189b271737e1565bdce30deb4a08d647e3f5f54
++  EXApplication: d8f53a7eee90a870a75656280e8d4b85726ea903
++  EXConstants: f348da07e21b23d2b085e270d7b74f282df1a7d9
++  EXFileSystem: 844e86ca9b5375486ecc4ef06d3838d5597d895d
++  EXFont: 6ea3800df746be7233208d80fe379b8ed74f4272
++  Expo: b1457fbd549c00d17b62c402bc98c8229aace6d8
++  ExpoKeepAwake: 69f5f627670d62318410392d03e0b5db0f85759a
++  ExpoModulesCore: 653958063a301098b541ae4dfed1ac0b98db607b
++  EXSplashScreen: 0e0a9ba0cf7553094e93213099bd7b42e6e237e9
+   FBLazyVector: a89a0525bc7ca174675045c2b492b5280d5a2470
+   FBReactNativeSpec: 7714e6bc1e9ea23df6c4cb42f0b2fd9c6a3a559c
+-  Flipper: 26fc4b7382499f1281eb8cb921e5c3ad6de91fe0
+-  Flipper-Boost-iOSX: fd1e2b8cbef7e662a122412d7ac5f5bea715403c
+-  Flipper-DoubleConversion: 2dc99b02f658daf147069aad9dbd29d8feb06d30
+-  Flipper-Fmt: 60cbdd92fc254826e61d669a5d87ef7015396a9b
+-  Flipper-Folly: 584845625005ff068a6ebf41f857f468decd26b3
+-  Flipper-Glog: 70c50ce58ddaf67dc35180db05f191692570f446
+-  Flipper-PeerTalk: 116d8f857dc6ef55c7a5a75ea3ceaafe878aadc9
+-  Flipper-RSocket: d9d9ade67cbecf6ac10730304bf5607266dd2541
+-  FlipperKit: cbdee19bdd4e7f05472a66ce290f1b729ba3cb86
+   fmt: ff9d55029c625d3757ed641535fd4a75fedc7ce9
+   glog: 04b94705f318337d7ead9e6d17c019bd9b1f6b1b
+   hermes-engine: 4438d2b8bf8bebaba1b1ac0451160bab59e491f8
+   libevent: 4049cae6c81cdb3654a443be001fb9bdceff7913
+-  OpenSSL-Universal: ebc357f1e6bc71fa463ccb2fe676756aff50e88c
+   RCT-Folly: 424b8c9a7a0b9ab2886ffe9c3b041ef628fd4fb1
+   RCTRequired: 5a4a30ac20c86eeadd6844a9328f78d4168cf9b2
+   RCTTypeSafety: 279fc5861a89f0f37db3a585f27f971485b4b734
+@@ -614,10 +552,8 @@ SPEC CHECKSUMS:
+   React-RCTVibration: 08f132cad9896458776f37c112e71d60aef1c6ae
+   React-runtimeexecutor: c5c89f8f543842dd864b63ded1b0bbb9c9445328
+   ReactCommon: dbfbe2f7f3c5ce4ce44f43f2fd0d5950d1eb67c5
+-  SocketRocket: fccef3f9c5cedea1353a9ef6ada904fde10d6608
+   Yoga: d56980c8914db0b51692f55533409e844b66133c
+-  YogaKit: f782866e155069a2cca2517aafea43200b01fd5a
+ 
+-PODFILE CHECKSUM: 36ec4619814bc645314ec9ab2f8d3e29a1eaca6d
++PODFILE CHECKSUM: 46143f8ad82980aaeb2f5d7d576158833da8366f
+ 
+ COCOAPODS: 1.12.1
