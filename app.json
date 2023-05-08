@@ -1,4 +1,10 @@
 {
   "name": "CleanProject",
-  "displayName": "CleanProject"
+  "displayName": "CleanProject",
+  "android": {
+    "package": "com.cleanproject"
+  },
+  "ios": {
+    "bundleIdentifier": "com.cleanproject"
+  }
 }
